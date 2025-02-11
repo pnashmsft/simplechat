@@ -1,3 +1,5 @@
+# route_backend_documents.py
+
 from config import *
 from functions_authentication import *
 from functions_documents import *
@@ -6,6 +8,7 @@ from functions_settings import *
 def register_route_backend_documents(app):
     @app.route('/api/get_file_content', methods=['POST'])
     @login_required
+    @user_required
     def get_file_content():
         data = request.get_json()
         user_id = get_current_user_id()
@@ -50,6 +53,7 @@ def register_route_backend_documents(app):
     
     @app.route('/api/documents/upload', methods=['POST'])
     @login_required
+    @user_required
     def upload_document():
         settings = get_settings()
         user_id = get_current_user_id()
@@ -115,6 +119,7 @@ def register_route_backend_documents(app):
 
     @app.route('/api/documents', methods=['GET'])
     @login_required
+    @user_required
     def api_get_user_documents():
         user_id = get_current_user_id()
         if not user_id:
@@ -124,6 +129,7 @@ def register_route_backend_documents(app):
 
     @app.route('/api/documents/<document_id>', methods=['GET'])
     @login_required
+    @user_required
     def api_get_user_document(document_id):
         user_id = get_current_user_id()
         if not user_id:
@@ -133,6 +139,7 @@ def register_route_backend_documents(app):
 
     @app.route('/api/documents/<document_id>', methods=['DELETE'])
     @login_required
+    @user_required
     def api_delete_user_document(document_id):
         user_id = get_current_user_id()
         if not user_id:
@@ -147,51 +154,52 @@ def register_route_backend_documents(app):
             #print(f"Error deleting document: {str(e)}")
             return jsonify({'error': f'Error deleting document: {str(e)}'}), 500
         
-    @app.route('/api/get_citation', methods=['POST'])
+    @app.route("/api/get_citation", methods=["POST"])
     @login_required
+    @user_required
     def get_citation():
         data = request.get_json()
         user_id = get_current_user_id()
-        citation_id = data.get('citation_id')
+        citation_id = data.get("citation_id")
 
         if not user_id:
-            #print("User not authenticated.")
-            return jsonify({'error': 'User not authenticated'}), 401
-
+            return jsonify({"error": "User not authenticated"}), 401
         if not citation_id:
-            #print("Missing citation_id.")
-            return jsonify({'error': 'Missing citation_id'}), 400
+            return jsonify({"error": "Missing citation_id"}), 400
 
+        # 1) Try user docs index
         try:
-            result = search_client_user.get_document(key=citation_id)
+            chunk = search_client_user.get_document(key=citation_id)
+            # If we found it in user docs, check user_id, etc.
+            if chunk.get("user_id") != user_id:
+                return jsonify({"error": "Unauthorized access to citation"}), 403
 
-            if not result:
-                #print("Citation not found.")
-                return jsonify({'error': 'Citation not found'}), 404
-
-            chunk = result
-            if chunk.get('user_id') != user_id:
-                #print("Unauthorized access to citation.")
-                return jsonify({'error': 'Unauthorized access to citation'}), 403
-
-            cited_text = chunk.get('chunk_text')
-            file_name = chunk.get('file_name')
-            page_number = chunk.get('chunk_sequence')
-
-            if not cited_text:
-                #print("Cited text not found.")
-                return jsonify({'error': 'Cited text not found'}), 404
-
-            #print(f"Citation {citation_id} retrieved successfully.")
+            # Build the response
             return jsonify({
-                'cited_text': cited_text,
-                'file_name': file_name,
-                'page_number': page_number
+                "cited_text": chunk.get("chunk_text", ""),
+                "file_name": chunk.get("file_name", ""),
+                "page_number": chunk.get("chunk_sequence", 0)
             }), 200
 
-        except AzureError as e:
-            #print(f"Error retrieving citation from Azure Cognitive Search: {str(e)}")
-            return jsonify({'error': 'Error retrieving citation'}), 500
+        except ResourceNotFoundError:
+            # Not found in user index, let's try group index
+            pass
+
+        # 2) Try group docs index
+        try:
+            group_chunk = search_client_group.get_document(key=citation_id)
+
+            # The chunk should have "group_id", "chunk_text", etc.
+            # Check if user is in that group, or skip if not needed
+            # build response
+            return jsonify({
+                "cited_text": group_chunk.get("chunk_text", ""),
+                "file_name": group_chunk.get("file_name", ""),
+                "page_number": group_chunk.get("chunk_sequence", 0)
+            }), 200
+
+        except ResourceNotFoundError:
+            return jsonify({"error": "Citation not found in user or group docs"}), 404
+
         except Exception as e:
-            #print(f"Unexpected error: {str(e)}")
-            return jsonify({'error': 'An unexpected error occurred'}), 500
+            return jsonify({"error": f"Unexpected error: {str(e)}"}), 500

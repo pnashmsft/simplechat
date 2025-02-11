@@ -1,3 +1,5 @@
+# route_frontend_chats.py
+
 from config import *
 from functions_authentication import *
 from functions_content import *
@@ -6,6 +8,7 @@ from functions_settings import *
 def register_route_frontend_chats(app):
     @app.route('/chats', methods=['GET'])
     @login_required
+    @user_required
     def chats():
         user_id = get_current_user_id()
         settings = get_settings()
@@ -15,6 +18,7 @@ def register_route_frontend_chats(app):
         return render_template('chats.html', settings=settings)
     @app.route('/upload', methods=['POST'])
     @login_required
+    @user_required
     def upload_file():
         settings = get_settings()
         user_id = get_current_user_id()
@@ -110,7 +114,8 @@ def register_route_frontend_chats(app):
                 'file_id': str(uuid.uuid4()),
                 'timestamp': datetime.utcnow().isoformat(),
                 'file_content': extracted_content,
-                'is_table': is_table
+                'is_table': is_table,
+                'model_deployment_name': None
             }
 
             conversation_item['messages'].append(file_message)

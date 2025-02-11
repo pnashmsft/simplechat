@@ -1,3 +1,4 @@
+# config.py
 import os
 import requests
 import uuid
@@ -9,8 +10,10 @@ import time
 import threading
 import random
 import base64
+import markdown2
+import re
 
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory, send_file
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory, send_file, Markup
 from werkzeug.utils import secure_filename
 from datetime import datetime, timezone
 from functools import wraps
@@ -18,24 +21,27 @@ from msal import ConfidentialClientApplication
 from flask_session import Session
 from uuid import uuid4
 from threading import Thread
-from openai import AzureOpenAI
+from openai import AzureOpenAI, RateLimitError
 from cryptography.fernet import Fernet, InvalidToken
+from urllib.parse import quote
 
-from azure.cosmos import CosmosClient, PartitionKey
+from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.search.documents import SearchClient, IndexDocumentsBatch
 from azure.search.documents.models import VectorizedQuery
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, ResourceNotFoundError
 from azure.core.polling import LROPoller
+from azure.mgmt.cognitiveservices import CognitiveServicesManagementClient
+from azure.identity import ClientSecretCredential
 
 app = Flask(__name__)
 
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
 app.config['SESSION_TYPE'] = 'filesystem'
-app.config['VERSION'] = '0.162.noencryption'
+app.config['VERSION'] = '0.191.0'
 Session(app)
 
 ALLOWED_EXTENSIONS = {
@@ -45,10 +51,12 @@ MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
 
 # Azure AD Configuration
 CLIENT_ID = os.getenv("CLIENT_ID")
+APP_URI = f"api://{CLIENT_ID}"
 CLIENT_SECRET = os.getenv("MICROSOFT_PROVIDER_AUTHENTICATION_SECRET")
 TENANT_ID = os.getenv("TENANT_ID")
 AUTHORITY = f"https://login.microsoftonline.us/{TENANT_ID}"
 SCOPE = ["User.Read"]  # Adjust scope according to your needs
+MICROSOFT_PROVIDER_AUTHENTICATION_SECRET = os.getenv("MICROSOFT_PROVIDER_AUTHENTICATION_SECRET")    
 
 # Azure Document Intelligence Configuration
 AZURE_DI_ENDPOINT = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
@@ -82,6 +90,7 @@ AZURE_OPENAI_IMAGE_GEN_KEY = os.getenv("AZURE_OPENAI_IMAGE_GEN_KEY")
 AZURE_AI_SEARCH_ENDPOINT = os.getenv('AZURE_AI_SEARCH_ENDPOINT')
 AZURE_AI_SEARCH_KEY = os.getenv('AZURE_AI_SEARCH_KEY')
 AZURE_AI_SEARCH_USER_INDEX = os.getenv('AZURE_AI_SEARCH_USER_INDEX')
+AZURE_AI_SEARCH_GROUP_INDEX = os.getenv('AZURE_AI_SEARCH_GROUP_INDEX')
 
 BING_SEARCH_ENDPOINT = os.getenv("BING_SEARCH_ENDPOINT")
 BING_SEARCH_KEY = os.getenv("BING_SEARCH_KEY")
@@ -111,6 +120,12 @@ search_client_user = SearchClient(
     credential=AzureKeyCredential(AZURE_AI_SEARCH_KEY)
 )
 
+search_client_group = SearchClient(
+    endpoint=AZURE_AI_SEARCH_ENDPOINT,
+    index_name=AZURE_AI_SEARCH_GROUP_INDEX,
+    credential=AzureKeyCredential(AZURE_AI_SEARCH_KEY)
+)
+
 settings_container_name = "settings"
 settings_container = database.create_container_if_not_exists(
     id=settings_container_name,
@@ -118,3 +133,23 @@ settings_container = database.create_container_if_not_exists(
     offer_throughput=400
 )
 
+groups_container_name = "groups"
+groups_container = database.create_container_if_not_exists(
+    id=groups_container_name,
+    partition_key=PartitionKey(path="/id"),
+    offer_throughput=400
+)
+
+group_documents_container_name = "group_documents"
+group_documents_container = database.create_container_if_not_exists(
+    id=group_documents_container_name,
+    partition_key=PartitionKey(path="/id"),
+    offer_throughput=400
+)
+
+user_settings_container_name = "user_settings"
+user_settings_container = database.create_container_if_not_exists(
+    id=user_settings_container_name,
+    partition_key=PartitionKey(path="/id"),
+    offer_throughput=400
+)

@@ -1,3 +1,5 @@
+# route_backend_chats.py
+
 from config import *
 from functions_authentication import *
 from functions_search import *
@@ -7,6 +9,7 @@ from functions_settings import *
 def register_route_backend_chats(app):
     @app.route('/api/chat', methods=['POST'])
     @login_required
+    @user_required
     def chat_api():
         settings = get_settings()
         data = request.get_json()
@@ -18,28 +21,48 @@ def register_route_backend_chats(app):
         user_message = data['message']
         conversation_id = data.get('conversation_id')
         hybrid_search_enabled = data.get('hybrid_search')
+        selected_document_id = data.get('selected_document_id')
         bing_search_enabled = data.get('bing_search')
         image_gen_enabled = data.get('image_generation')
 
+        enable_gpt_apim = settings.get('enable_gpt_apim', False)
+        enable_image_gen_apim = settings.get('enable_image_gen_apim', False)
+        
+        if enable_gpt_apim:
+            gpt_model = settings.get('azure_apim_gpt_deployment')
+            gpt_client = AzureOpenAI(
+                api_version = settings.get('azure_apim_gpt_api_version'),
+                azure_endpoint = settings.get('azure_apim_gpt_endpoint'),
+                api_key=settings.get('azure_apim_gpt_subscription_key')
+            )
+        else:
+            gpt_client = AzureOpenAI(
+                api_version=settings.get('azure_openai_gpt_api_version'),
+                azure_endpoint=settings.get('azure_openai_gpt_endpoint'),
+                api_key=settings.get('azure_openai_gpt_key')
+            )
 
-        gpt_client = AzureOpenAI(
-            api_version=settings.get('azure_openai_gpt_api_version'),
-            azure_endpoint=settings.get('azure_openai_gpt_endpoint'),
-            api_key=settings.get('azure_openai_gpt_key')
-        )
+            gpt_model_obj = settings.get('gpt_model', {})
+            if gpt_model_obj and gpt_model_obj.get('selected'):
+                selected_gpt_model = gpt_model_obj['selected'][0]
+                gpt_model = selected_gpt_model['deploymentName']
 
-
-        gpt_model = settings.get('gpt_model')
-
-
-        image_gen_client = AzureOpenAI(
-            api_version=settings.get('azure_openai_image_gen_api_version'),
-            azure_endpoint=settings.get('azure_openai_image_gen_endpoint'),
-            api_key=settings.get('azure_openai_image_gen_key')
-        )
-
-
-        image_gen_model = settings.get('image_gen_model')
+        if enable_image_gen_apim:
+            image_gen_model = settings.get('azure_apim_image_gen_deployment')
+            image_gen_client = AzureOpenAI(
+                api_version = settings.get('azure_apim_image_gen_api_version'),
+                azure_endpoint = settings.get('azure_apim_image_gen_endpoint'),
+                api_key=settings.get('azure_apim_image_gen_subscription_key'))
+        else:
+            image_gen_client = AzureOpenAI(
+                api_version=settings.get('azure_openai_image_gen_api_version'),
+                azure_endpoint=settings.get('azure_openai_image_gen_endpoint'),
+                api_key=settings.get('azure_openai_image_gen_key'))
+            
+            image_gen_obj = settings.get('image_gen_model', {})
+            if image_gen_obj and image_gen_obj.get('selected'):
+                selected_image_gen_model = image_gen_obj['selected'][0]
+                image_gen_model = selected_image_gen_model['deploymentName']
 
         # Convert hybrid_search_enabled to boolean if necessary
         if isinstance(hybrid_search_enabled, str):
@@ -85,7 +108,11 @@ def register_route_backend_chats(app):
                 return jsonify({'error': 'An error occurred'}), 500
 
         # Append the new user message
-        conversation_item['messages'].append({'role': 'user', 'content': user_message})
+        conversation_item['messages'].append({
+            'role': 'user', 
+            'content': user_message,
+            'model_deployment_name': None
+            })
 
         # If first user message, set conversation title
         if conversation_item.get('title', 'New Conversation') == 'New Conversation':
@@ -95,12 +122,19 @@ def register_route_backend_chats(app):
         # Optionally, if we want a default system prompt at the start
         if len(conversation_item['messages']) == 1 and settings.get('default_system_prompt'):
             conversation_item['messages'].insert(
-                0, {'role': 'system', 'content': settings.get('default_system_prompt')}
+                0, {
+                    'role': 'system', 
+                    'content': settings.get('default_system_prompt'),
+                    'model_deployment_name': None
+                }
             )
 
         # If hybrid search is enabled, perform it and include the results
         if hybrid_search_enabled:
-            search_results = hybrid_search(user_message, user_id, top_n=3)
+            if selected_document_id:
+                search_results = hybrid_search(user_message, user_id, document_id=selected_document_id, top_n=10)
+            else:
+                search_results = hybrid_search(user_message, user_id, top_n=10)
             if search_results:
                 retrieved_texts = []
                 for doc in search_results:
@@ -127,7 +161,8 @@ def register_route_backend_chats(app):
                 )
                 conversation_item['messages'].append({
                     'role': 'system', 
-                    'content': system_prompt
+                    'content': system_prompt,
+                    'model_deployment_name': None
                 })
                 #print("System prompt with hybrid search results added to conversation.")
 
@@ -158,7 +193,8 @@ def register_route_backend_chats(app):
                 )
                 conversation_item['messages'].append({
                     'role': 'system',
-                    'content': system_prompt
+                    'content': system_prompt,
+                    'model_deployment_name': None
                 })
                 container.upsert_item(body=conversation_item)
 
@@ -177,6 +213,7 @@ def register_route_backend_chats(app):
                     'content': generated_image_url,
                     'prompt': user_message,
                     'created_at': datetime.utcnow().isoformat(),
+                    'model_deployment_name': image_gen_model
                 })
 
                 conversation_item['last_updated'] = datetime.utcnow().isoformat()
@@ -186,7 +223,8 @@ def register_route_backend_chats(app):
                     'reply': f"Here's your generated image: {generated_image_url}",
                     'image_url': generated_image_url,
                     'conversation_id': conversation_id,
-                    'conversation_title': conversation_item['title']
+                    'conversation_title': conversation_item['title'],
+                    'model_deployment_name': image_gen_model
                 }), 200
 
             except Exception as e:
@@ -211,26 +249,41 @@ def register_route_backend_chats(app):
 
                 system_message = {
                     'role': 'system',
-                    'content': f"The user has uploaded a file named '{filename}' with the following content:\n\n{file_content}\n\nPlease use this information to assist the user."
+                    'content': f"The user has uploaded a file named '{filename}' with the following content:\n\n{file_content}\n\nPlease use this information to assist the user.",
+                    'model_deployment_name': None
                 }
                 conversation_history_for_api.append(system_message)
             else:
                 continue
 
-        response = gpt_client.chat.completions.create(
-            model=gpt_model,
-            messages=conversation_history_for_api
-        )
+        try:
+            response = gpt_client.chat.completions.create(
+                model=gpt_model,
+                messages=conversation_history_for_api
+            )
+            ai_message = response.choices[0].message.content
+        except Exception as e:
+            print(str(e))
+            return jsonify({'error': f'Error generating model response: {str(e)}'}), 500
 
-        ai_message = response.choices[0].message.content
-        conversation_item['messages'].append({'role': 'assistant', 'content': ai_message})
+
+        conversation_item['messages'].append({
+            'role': 'assistant',
+            'content': ai_message,
+            'model_deployment_name': gpt_model
+        })
+
         conversation_item['last_updated'] = datetime.utcnow().isoformat()
-
         container.upsert_item(body=conversation_item)
         #print("AI response generated and conversation updated.")
+
+        # for msg in conversation_item['messages']:
+        #     if 'model_deployment_name' not in msg:
+        #         msg['model_deployment_name'] = None
 
         return jsonify({
             'reply': ai_message,
             'conversation_id': conversation_id,
-            'conversation_title': conversation_item['title']
+            'conversation_title': conversation_item['title'],
+            'model_deployment_name': gpt_model
         })
