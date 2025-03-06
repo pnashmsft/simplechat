@@ -11,11 +11,13 @@ from functions_settings import *
 from route_frontend_authentication import *
 from route_frontend_profile import *
 from route_frontend_admin_settings import *
-from route_frontend_documents import *
+from route_frontend_workspace import *
 from route_frontend_chats import *
 from route_frontend_conversations import *
 from route_frontend_groups import *
-from route_frontend_group_documents import *
+from route_frontend_group_workspaces import *
+from route_frontend_safety import *
+from route_frontend_feedback import *
 
 from route_backend_chats import *
 from route_backend_conversations import *
@@ -24,12 +26,23 @@ from route_backend_groups import *
 from route_backend_users import *
 from route_backend_group_documents import *
 from route_backend_models import *
+from route_backend_safety import *
+from route_backend_feedback import *
+from route_backend_settings import *
+from route_backend_prompts import *
+from route_backend_group_prompts import *
 
 # =================== Helper Functions ===================
+@app.before_first_request
+def before_first_request():
+    settings = get_settings()
+    initialize_clients(settings)
+
 @app.context_processor
 def inject_settings():
     settings = get_settings()
-    return dict(app_settings=settings)
+    public_settings = sanitize_settings_for_user(settings)
+    return dict(app_settings=public_settings)
 
 @app.template_filter('to_datetime')
 def to_datetime_filter(value):
@@ -59,6 +72,7 @@ app.jinja_env.filters['markdown'] = markdown_filter
 @app.route('/')
 def index():
     settings = get_settings()
+    public_settings = sanitize_settings_for_user(settings)
 
     # Ensure landing_page_text is always a valid string
     landing_text = settings.get("landing_page_text", "Click the button below to start chatting with the AI assistant. You agree to our [acceptable user policy by using this service](acceptable_use_policy.html).")
@@ -66,7 +80,7 @@ def index():
     # Convert Markdown to HTML safely
     landing_html = markdown_filter(landing_text)
 
-    return render_template('index.html', app_settings=settings, landing_html=landing_html)
+    return render_template('index.html', app_settings=public_settings, landing_html=landing_html)
 
 @app.route('/robots933456.txt')
 def robots():
@@ -97,13 +111,19 @@ register_route_frontend_chats(app)
 register_route_frontend_conversations(app)
 
 # ------------------- Documents Routes -------------------
-register_route_frontend_documents(app)
+register_route_frontend_workspace(app)
 
 # ------------------- Groups Routes ----------------------
 register_route_frontend_groups(app)
 
 # ------------------- Group Documents Routes -------------
-register_route_frontend_group_documents(app)
+register_route_frontend_group_workspaces(app)
+
+# ------------------- Safety Routes ----------------------
+register_route_frontend_safety(app)
+
+# ------------------- Feedback Routes -------------------
+register_route_frontend_feedback(app)
 
 # =================== Back End Routes ====================
 # ------------------- API Chat Routes --------------------
@@ -127,5 +147,22 @@ register_route_backend_group_documents(app)
 # ------------------- API Model Routes -------------------
 register_route_backend_models(app)
 
+# ------------------- API Safety Logs Routes -------------
+register_route_backend_safety(app)
+
+# ------------------- API Feedback Routes ---------------
+register_route_backend_feedback(app)
+
+# ------------------- API Settings Routes ---------------
+register_route_backend_settings(app)
+
+# ------------------- API Prompts Routes ----------------
+register_route_backend_prompts(app)
+
+# ------------------- API Group Prompts Routes ----------
+register_route_backend_group_prompts(app)
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    settings = get_settings()
+    initialize_clients(settings)
+    app.run(debug=False)
